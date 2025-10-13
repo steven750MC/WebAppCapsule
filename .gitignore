@@ -1,0 +1,20 @@
+# Secrets
+*.jks
+*.keystore
+
+# Local properties
+/local.properties
+
+# Build files
+/.gradle/
+/captures/
+.cxx/
+.externalNativeBuild/
+build/
+
+# IDE files
+/.idea/
+*.iml
+
+# macOS file
+.DS_Store
