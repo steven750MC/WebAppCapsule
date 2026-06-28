@@ -50,15 +50,16 @@ class MainActivity : AppCompatActivity() {
                 var results: Array<Uri>? = null
                 
                 if (data != null) {
-                    val dataString = data.dataString
                     val clipData = data.clipData
                     
                     if (clipData != null) {
                         results = Array(clipData.itemCount) { i ->
                             clipData.getItemAt(i).uri
                         }
-                    } else if (dataString != null) {
-                        results = arrayOf(Uri.parse(dataString))
+                    } else {
+                        data.data?.let { uri ->
+                            results = arrayOf(uri)
+                        }
                     }
                 }
                 filePathCallback?.onReceiveValue(results)
@@ -91,17 +92,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             webChromeClient = object : WebChromeClient() {
-                override fun onExceededDatabaseQuota(
-                    url: String?,
-                    databaseIdentifier: String?,
-                    quota: Long,
-                    estimatedDatabaseSize: Long,
-                    totalQuota: Long,
-                    quotaUpdater: QuotaUpdater?
-                ) {
-                    quotaUpdater?.updateQuota(100 * 1024 * 1024)
-                }
-
                 // مدیریت انتخاب فایل برای Upload
                 override fun onShowFileChooser(
                     webView: WebView?,
@@ -123,21 +113,6 @@ class MainActivity : AppCompatActivity() {
                         return false
                     }
                     return true
-                }
-
-                // برای نسخه‌های قدیمی‌تر اندروید
-                @Suppress("DEPRECATION")
-                override fun openFileChooser(uploadMsg: ValueCallback<Uri>?, acceptType: String?, capture: String?) {
-                    filePathCallback = uploadMsg as? ValueCallback<Array<Uri>>?
-                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = acceptType ?: "*/*"
-                    }
-                    try {
-                        fileChooserLauncher.launch(intent)
-                    } catch (e: Exception) {
-                        Toast.makeText(this@MainActivity, "نمی‌توان فایل منیجر را باز کرد", Toast.LENGTH_SHORT).show()
-                    }
                 }
             }
 
@@ -208,7 +183,7 @@ class MainActivity : AppCompatActivity() {
                             xhr.send();
                         """.trimIndent()
                         
-                        binding.webView.evaluateJavascript(js, null)
+                        evaluateJavascript(js, null)
                         Toast.makeText(this@MainActivity, "در حال آماده‌سازی فایل سیو...", Toast.LENGTH_SHORT).show()
                         return@DownloadListener
                     }
@@ -268,4 +243,4 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {}
-}
+} 
