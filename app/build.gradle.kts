@@ -38,9 +38,6 @@ android {
     buildFeatures {
         viewBinding = true
     }
-    sourceSets.getByName("main") {
-    assets.srcDir("src/main/assets")
-}
 }
 
 dependencies {
