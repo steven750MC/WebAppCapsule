@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -213,21 +214,28 @@ class MainActivity : AppCompatActivity() {
                             val base64 = base64Data.substring(base64Data.indexOf(",") + 1)
                             val bytes = Base64.decode(base64, Base64.DEFAULT)
                             
+                            // ذخیره مستقیم در پوشه Downloads
                             val fileName = "save_${System.currentTimeMillis()}.zip"
-                            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+                            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                            val file = File(downloadsDir, fileName)
                             FileOutputStream(file).use { it.write(bytes) }
                             
-                            val request = DownloadManager.Request(Uri.fromFile(file))
-                            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                            request.setMimeType(mimeType)
+                            // اسکن فایل برای نمایش در فایل منیجر
+                            MediaScannerConnection.scanFile(
+                                this@MainActivity,
+                                arrayOf(file.absolutePath),
+                                arrayOf(mimeType)
+                            ) { path, uri ->
+                                // فایل اسکن شد
+                            }
                             
-                            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                            dm.enqueue(request)
-                            
-                            Toast.makeText(this@MainActivity, "فایل سیو دانلود شد", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                this@MainActivity,
+                                "فایل سیو در Downloads ذخیره شد: $fileName",
+                                Toast.LENGTH_LONG
+                            ).show()
                         } catch (e: Exception) {
-                            Toast.makeText(this@MainActivity, "خطا: ${e.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "خطا در ذخیره فایل: ${e.message}", Toast.LENGTH_LONG).show()
                         }
                     }
                 }
@@ -243,4 +251,4 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {}
-} 
+}
