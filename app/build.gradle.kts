@@ -39,8 +39,8 @@ android {
         viewBinding = true
     }
     sourceSets.getByName("main") {
-        assets.srcDir("www")
-    }
+    assets.srcDir("src/main/assets")
+}
 }
 
 dependencies {
