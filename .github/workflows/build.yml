@@ -21,32 +21,24 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # === مهم: وارد پوشه پروژه شو ===
-      - name: Move to project directory
-        run: |
-          echo "Project is inside: AndroidProject"   # نام پوشه را عوض کن
-          cd AndroidProject                          # ←←← اینجا نام پوشه پروژه‌ات رو بنویس
-
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
-        working-directory: ./AndroidProject         # ←←←
 
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
-            \~/.gradle/caches
-            \~/.gradle/wrapper
-          key: \( {{ runner.os }}-gradle- \){{ hashFiles('**/AndroidProject/**/*.gradle*') }}
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: ${{ runner.os }}-gradle-
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
-        working-directory: ./AndroidProject         # ←←← مهم
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: AndroidProject/app/build/outputs/apk/debug/app-debug.apk   # مسیر درست
+          path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
