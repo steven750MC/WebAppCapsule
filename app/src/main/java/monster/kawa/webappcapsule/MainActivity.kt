@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
 
         val assetLoader = WebViewAssetLoader.Builder()
             .setDomain("appassets.androidplatform.net")
-            .addPathHandler("/www/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
 
         binding.webView.apply {
@@ -100,7 +100,7 @@ class MainActivity : AppCompatActivity() {
                 }
             })
             
-            loadUrl("https://appassets.androidplatform.net/www/index.html")
+            loadUrl("https://appassets.androidplatform.net/index.html")
         }
     }
 
