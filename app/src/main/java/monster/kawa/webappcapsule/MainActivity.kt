@@ -7,30 +7,67 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.util.Base64
 import android.view.KeyEvent
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
 import monster.kawa.webappcapsule.databinding.ActivityMainBinding
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // ثبت launcher برای انتخاب فایل
+        fileChooserLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == RESULT_OK) {
+                val data = result.data
+                var results: Array<Uri>? = null
+                
+                if (data != null) {
+                    val dataString = data.dataString
+                    val clipData = data.clipData
+                    
+                    if (clipData != null) {
+                        results = Array(clipData.itemCount) { i ->
+                            clipData.getItemAt(i).uri
+                        }
+                    } else if (dataString != null) {
+                        results = arrayOf(Uri.parse(dataString))
+                    }
+                }
+                filePathCallback?.onReceiveValue(results)
+                filePathCallback = null
+            } else {
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = null
+            }
+        }
 
         // Immersive mode
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -47,33 +84,82 @@ class MainActivity : AppCompatActivity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                allowFileAccess = false
-                allowContentAccess = false
+                databasePath = applicationContext.filesDir.path + "/databases/"
+                allowFileAccess = true
+                allowContentAccess = true
+                mediaPlaybackRequiresUserGesture = false
             }
-            
+
+            webChromeClient = object : WebChromeClient() {
+                override fun onExceededDatabaseQuota(
+                    url: String?,
+                    databaseIdentifier: String?,
+                    quota: Long,
+                    estimatedDatabaseSize: Long,
+                    totalQuota: Long,
+                    quotaUpdater: QuotaUpdater?
+                ) {
+                    quotaUpdater?.updateQuota(100 * 1024 * 1024)
+                }
+
+                // مدیریت انتخاب فایل برای Upload
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    this@MainActivity.filePathCallback?.onReceiveValue(null)
+                    this@MainActivity.filePathCallback = filePathCallback
+
+                    val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                    }
+
+                    try {
+                        fileChooserLauncher.launch(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "نمی‌توان فایل منیجر را باز کرد", Toast.LENGTH_SHORT).show()
+                        return false
+                    }
+                    return true
+                }
+
+                // برای نسخه‌های قدیمی‌تر اندروید
+                @Suppress("DEPRECATION")
+                override fun openFileChooser(uploadMsg: ValueCallback<Uri>?, acceptType: String?, capture: String?) {
+                    filePathCallback = uploadMsg as? ValueCallback<Array<Uri>>?
+                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = acceptType ?: "*/*"
+                    }
+                    try {
+                        fileChooserLauncher.launch(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "نمی‌توان فایل منیجر را باز کرد", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                    // فقط درخواست‌های دامنه خودمون رو از assets بخون
                     return if (request.url.host == "appassets.androidplatform.net") {
                         assetLoader.shouldInterceptRequest(request.url)
                     } else {
-                        // بقیه رو بذار WebView از اینترنت بگیره (iframe آنلاین و...)
                         super.shouldInterceptRequest(view, request)
                     }
                 }
 
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     val url = request.url.toString()
-                    
+
                     return when {
-                        // لینک‌های intent:// رو با Intent باز کن
                         url.startsWith("intent://") -> {
                             try {
                                 val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
                                 if (packageManager.resolveActivity(intent, 0) != null) {
                                     startActivity(intent)
                                 } else {
-                                    // fallback اگه اپی نبود
                                     val fallbackUrl = intent.getStringExtra("browser_fallback_url")
                                     if (fallbackUrl != null) {
                                         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl)))
@@ -86,11 +172,9 @@ class MainActivity : AppCompatActivity() {
                             }
                             true
                         }
-                        
-                        // لینک‌های داخلی رو خود WebView باز کنه
+
                         request.url.host == "appassets.androidplatform.net" -> false
-                        
-                        // بقیه لینک‌های خارجی رو با مرورگر باز کن
+
                         else -> {
                             try {
                                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -106,68 +190,82 @@ class MainActivity : AppCompatActivity() {
                     view.requestFocus()
                 }
             }
-            
-            // Download listener for WebView
+
             setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
                 try {
+                    if (url.startsWith("blob:")) {
+                        val js = """
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('GET', '$url', true);
+                            xhr.responseType = 'blob';
+                            xhr.onload = function() {
+                                var reader = new FileReader();
+                                reader.readAsDataURL(xhr.response);
+                                reader.onloadend = function() {
+                                    Android.saveBlob(reader.result, '$mimetype', '${contentDisposition ?: ""}');
+                                };
+                            };
+                            xhr.send();
+                        """.trimIndent()
+                        
+                        binding.webView.evaluateJavascript(js, null)
+                        Toast.makeText(this@MainActivity, "در حال آماده‌سازی فایل سیو...", Toast.LENGTH_SHORT).show()
+                        return@DownloadListener
+                    }
+
                     val request = DownloadManager.Request(Uri.parse(url))
-                    
-                    // Set notification visibility
-                    request.setNotificationVisibility(
-                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                    )
-                    
-                    // Set destination
+                    request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
-                    request.setDestinationInExternalPublicDir(
-                        Environment.DIRECTORY_DOWNLOADS,
-                        fileName
-                    )
-                    
-                    // Add cookies for authentication if needed
+                    request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
                     val cookies = CookieManager.getInstance().getCookie(url)
                     request.addRequestHeader("cookie", cookies)
-                    
                     request.addRequestHeader("User-Agent", userAgent)
                     request.setMimeType(mimetype)
-                    
-                    // Start download
+
                     val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                     downloadManager.enqueue(request)
-                    
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Downloading $fileName",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this@MainActivity, "Downloading $fileName", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Download failed: ${e.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this@MainActivity, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             })
-            
+
+            addJavascriptInterface(object {
+                @android.webkit.JavascriptInterface
+                fun saveBlob(base64Data: String, mimeType: String, contentDisposition: String) {
+                    runOnUiThread {
+                        try {
+                            val base64 = base64Data.substring(base64Data.indexOf(",") + 1)
+                            val bytes = Base64.decode(base64, Base64.DEFAULT)
+                            
+                            val fileName = "save_${System.currentTimeMillis()}.zip"
+                            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+                            FileOutputStream(file).use { it.write(bytes) }
+                            
+                            val request = DownloadManager.Request(Uri.fromFile(file))
+                            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                            request.setMimeType(mimeType)
+                            
+                            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                            dm.enqueue(request)
+                            
+                            Toast.makeText(this@MainActivity, "فایل سیو دانلود شد", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(this@MainActivity, "خطا: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }, "Android")
+
             loadUrl("https://appassets.androidplatform.net/index.html")
         }
     }
 
-    // Back button handling for WebView
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && binding.webView.canGoBack()) {
-            binding.webView.goBack()
-            return true
-        }
+        if (keyCode == KeyEvent.KEYCODE_BACK) return true
         return super.onKeyDown(keyCode, event)
     }
 
-    // Handle back press for WebView (alternative method)
-    override fun onBackPressed() {
-        if (binding.webView.canGoBack()) {
-            binding.webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
-} 
+    override fun onBackPressed() {}
+}
