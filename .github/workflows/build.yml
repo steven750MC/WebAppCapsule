@@ -24,6 +24,21 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
+      # === DEBUG: ببین فایل‌های assets کجان ===
+      - name: Debug - Check assets structure
+        run: |
+          echo "=== Root folder ==="
+          ls -la
+          echo ""
+          echo "=== app/src/main ==="
+          ls -la app/src/main/ || echo "NOT FOUND"
+          echo ""
+          echo "=== app/src/main/assets ==="
+          ls -laR app/src/main/assets/ || echo "assets folder NOT FOUND!"
+          echo ""
+          echo "=== Searching for index.html everywhere ==="
+          find . -name "index.html" || echo "index.html NOT FOUND anywhere!"
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -41,4 +56,4 @@ jobs:
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          retention-days: 30 
