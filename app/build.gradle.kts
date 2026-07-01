@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "ir.steven750mc.yumenikki"
+    namespace = "monster.kawa.webappcapsule"
     compileSdk {
         version = release(36)
     }
