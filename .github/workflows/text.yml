@@ -1,0 +1,22 @@
+name: Test Actions
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test logs
+        run: |
+          echo "===================="
+          echo "GitHub Actions is running!"
+          echo "Hello from the runner"
+          echo "Date:"
+          date
+          echo "Runner OS:"
+          uname -a
+          echo "===================="
