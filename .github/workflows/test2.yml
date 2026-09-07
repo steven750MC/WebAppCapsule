@@ -1,0 +1,27 @@
+name: Test on Mac
+
+on:
+  push:
+  workflow_dispatch:  # اجازه اجرای دستی هم بده
+
+jobs:
+  test-mac:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Print system info
+        run: |
+          echo "🚀 Running on macOS!"
+          uname -a
+          sw_vers
+          
+      - name: Print current directory
+        run: |
+          echo "Current dir: $(pwd)"
+          ls -la
+          
+      - name: Print environment variables
+        run: |
+          echo "User: $USER"
+          echo "Shell: $SHELL"
+          echo "PATH: $PATH"
