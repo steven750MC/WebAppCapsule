@@ -48,21 +48,7 @@ android {
     // extension the game actually ships as noCompress makes AAPT store them
     // as-is, so what's read back is byte-for-byte what's on disk.
     androidResources {
-        noCompress += listOf(
-            "json",
-            "ogg",
-            "m4a",
-            "mp3",
-            "wav",
-            "png",
-            "jpg",
-            "jpeg",
-            "webp",
-            "ttf",
-            "otf",
-            "k9a",
-            "loc"
-        )
+        noCompress += ""
     }
 }
 
