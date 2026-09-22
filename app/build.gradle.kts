@@ -38,6 +38,32 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    // CRITICAL for the WebViewAssetLoader-served game files under
+    // assets/gamefiles/: by default AAPT compresses assets whose extension
+    // it recognizes (and re-compresses/repackages the rest depending on
+    // size), which can make WebViewAssetLoader serve them incorrectly or
+    // intermittently fail to serve them at all - exactly the "fetch
+    // sometimes fails and the game hangs on Loading" symptom. Marking every
+    // extension the game actually ships as noCompress makes AAPT store them
+    // as-is, so what's read back is byte-for-byte what's on disk.
+    androidResources {
+        noCompress += listOf(
+            "json",
+            "ogg",
+            "m4a",
+            "mp3",
+            "wav",
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "ttf",
+            "otf",
+            "k9a",
+            "loc"
+        )
+    }
 }
 
 dependencies {
