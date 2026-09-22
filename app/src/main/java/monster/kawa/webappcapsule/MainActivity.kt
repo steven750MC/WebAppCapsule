@@ -317,6 +317,14 @@ class MainActivity : AppCompatActivity() {
      *  5. Waits for #btn-play to appear (import succeeded) and clicks it,
      *     which is the same as the user pressing Play themselves.
      *
+     * Every fetch (manifest + each per-file fetch) goes through
+     * fetchWithRetry(): a handful of retries with exponential backoff before
+     * giving up, plus a cache-busting query param on retries so a broken/
+     * empty response served once (e.g. transient WebViewAssetLoader hiccup)
+     * doesn't get reused. This is what previously made the game hang on
+     * "Loading" forever the moment a single fetch failed once - now a
+     * transient failure is retried instead of aborting the whole import.
+     *
      * If the game's own www/ root already contains "www" as its first path
      * segment inside the manifest, GAME_ROOT_LABEL is irrelevant; the loader's
      * normalizeFolderPath() only strips the FIRST path segment then an
@@ -341,6 +349,53 @@ class MainActivity : AppCompatActivity() {
           }
           function ssRemove(key) {
             try { sessionStorage.removeItem(key); } catch (e) {}
+          }
+
+          function sleep(ms) {
+            return new Promise(function(resolve) { setTimeout(resolve, ms); });
+          }
+
+          // Tries to reach the loader's own status line if it's already
+          // defined on the page by the time we run (it is, since this
+          // script only fires from onPageFinished). Best-effort only -
+          // never lets a UI failure break the import itself.
+          function reportProgress(msg) {
+            try {
+              var el = document.getElementById('status');
+              if (el) el.textContent = msg;
+            } catch (e) {}
+          }
+
+          // Fetches url with retries + exponential backoff (with jitter)
+          // before giving up. On every retry attempt (not the first try)
+          // a cache-busting query param is appended, so a bad/empty
+          // response that got served once isn't just replayed from some
+          // intermediate cache. Treats both network errors (fetch reject)
+          // and non-OK HTTP statuses as retryable failures.
+          async function fetchWithRetry(url, maxRetries, label) {
+            var attempt = 0;
+            var lastErr = null;
+            while (attempt <= maxRetries) {
+              try {
+                var target = url;
+                if (attempt > 0) {
+                  target += (url.indexOf('?') === -1 ? '?' : '&') + '_retry=' + attempt;
+                  reportProgress('در حال تلاش مجدد (' + attempt + '/' + maxRetries + ')... ' + (label || ''));
+                }
+                var resp = await fetch(target, { cache: 'no-store' });
+                if (resp.ok) return resp;
+                lastErr = new Error('HTTP ' + resp.status + ' for ' + url);
+              } catch (e) {
+                lastErr = e;
+              }
+              attempt++;
+              if (attempt <= maxRetries) {
+                var backoff = Math.min(4000, 400 * Math.pow(2, attempt - 1));
+                var jitter = Math.floor(Math.random() * 150);
+                await sleep(backoff + jitter);
+              }
+            }
+            throw lastErr || new Error('fetch failed for ' + url);
           }
 
           // Waits for the Play button to appear AND the Service Worker to
@@ -394,24 +449,44 @@ class MainActivity : AppCompatActivity() {
               }
               ssSet('twal_import_started', '1');
 
-              var manifestResp = await fetch('gamefiles-manifest.json', { cache: 'no-store' });
-              if (!manifestResp.ok) throw new Error('manifest fetch failed: ' + manifestResp.status);
+              var manifestResp = await fetchWithRetry('gamefiles-manifest.json', 4, 'manifest');
               var paths = await manifestResp.json();
               if (!Array.isArray(paths) || paths.length === 0) throw new Error('empty manifest');
 
               var dt = new DataTransfer();
+              var failedPaths = [];
               for (var i = 0; i < paths.length; i++) {
                 var relPath = paths[i];
-                var resp = await fetch('gamefiles/' + relPath, { cache: 'no-store' });
-                if (!resp.ok) throw new Error('fetch failed for ' + relPath + ': ' + resp.status);
-                var blob = await resp.blob();
-                var name = relPath.split('/').pop();
-                var file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
-                Object.defineProperty(file, 'webkitRelativePath', {
-                  value: '$GAME_ROOT_LABEL/www/' + relPath,
-                  configurable: true
-                });
-                dt.items.add(file);
+                reportProgress('در حال دریافت فایل ' + (i + 1) + ' از ' + paths.length + '...');
+                try {
+                  // Up to 5 retries per file: game installs can have
+                  // thousands of small requests, and a handful of
+                  // transient failures among them is normal - it's the
+                  // give-up-on-first-miss behavior that caused the stuck
+                  // "Loading" screen, not the failures themselves.
+                  var resp = await fetchWithRetry('gamefiles/' + relPath, 5, relPath);
+                  var blob = await resp.blob();
+                  var name = relPath.split('/').pop();
+                  var file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+                  Object.defineProperty(file, 'webkitRelativePath', {
+                    value: '$GAME_ROOT_LABEL/www/' + relPath,
+                    configurable: true
+                  });
+                  dt.items.add(file);
+                } catch (fileErr) {
+                  failedPaths.push(relPath + ': ' + (fileErr && fileErr.message ? fileErr.message : String(fileErr)));
+                }
+              }
+
+              // Fail loudly and specifically instead of silently handing
+              // an incomplete file list to the loader's own storeFiles(),
+              // which would otherwise just report generic "missing files".
+              if (failedPaths.length > 0) {
+                throw new Error(
+                  'failed to fetch ' + failedPaths.length + ' of ' + paths.length + ' file(s) after retries:\n' +
+                  failedPaths.slice(0, 10).join('\n') +
+                  (failedPaths.length > 10 ? '\n...and ' + (failedPaths.length - 10) + ' more' : '')
+                );
               }
 
               var input = document.getElementById('file-input');
@@ -421,6 +496,9 @@ class MainActivity : AppCompatActivity() {
 
               waitAndClickPlay();
             } catch (err) {
+              // Let a fresh page load retry the whole import from scratch
+              // rather than getting stuck permanently flagged as "started".
+              ssRemove('twal_import_started');
               fail(err && err.message ? err.message : String(err));
             }
           }
