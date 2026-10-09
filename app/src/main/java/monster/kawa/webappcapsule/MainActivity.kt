@@ -1,38 +1,39 @@
 package monster.kawa.webappcapsule
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Base64
 import android.view.KeyEvent
+import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.MimeTypeMap
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.webkit.ServiceWorkerClientCompat
-import androidx.webkit.ServiceWorkerControllerCompat
-import androidx.webkit.WebViewAssetLoader
-import androidx.webkit.WebViewFeature
 import monster.kawa.webappcapsule.databinding.ActivityMainBinding
 import java.io.File
 import java.io.FileOutputStream
@@ -42,18 +43,15 @@ import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        private const val START_URL = "https://ynoproject.net/"
+        private const val SITE_HOST = "ynoproject.net"
+    }
+
     private lateinit var binding: ActivityMainBinding
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
-    private lateinit var prefs: SharedPreferences
-
-    // ---- Auto-import config ----
-    // Folder name that is reported to the loader as the "picked" root folder.
-    // The loader only cares that a "www/" segment shows up somewhere in the
-    // relative path, so the exact name here doesn't matter.
-    private val GAME_ROOT_LABEL = "Game"
-    private val PREFS_NAME = "webappcapsule_prefs"
-    private val KEY_IMPORTED = "game_imported"
+    private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,15 +59,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        // Remote debugging: connect the phone via USB, enable USB debugging
-        // in Developer Options, then open chrome://inspect on a PC with
-        // Chrome. This app's WebView will show up there with a real
-        // Console + Network tab - the only reliable way to see what's
-        // actually happening with sw.js registration and script loads
-        // inside THIS app (as opposed to some other local server/tab).
-        WebView.setWebContentsDebuggingEnabled(true)
+        // جلوگیری از خاموش شدن خودکار صفحه
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         fileChooserLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -80,81 +71,58 @@ class MainActivity : AppCompatActivity() {
 
                 if (data != null) {
                     val clipData = data.clipData
-
                     if (clipData != null) {
-                        results = Array(clipData.itemCount) { i ->
-                            clipData.getItemAt(i).uri
-                        }
+                        results = Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
                     } else {
-                        data.data?.let { uri ->
-                            results = arrayOf(uri)
-                        }
+                        data.data?.let { uri -> results = arrayOf(uri) }
                     }
                 }
                 filePathCallback?.onReceiveValue(results)
-                filePathCallback = null
             } else {
                 filePathCallback?.onReceiveValue(null)
-                filePathCallback = null
             }
+            filePathCallback = null
         }
+
+        notificationPermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { /* حتی اگر رد بشه سرویس کار می‌کنه، فقط نوتیف دیده نمی‌شه */ }
 
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        val assetLoader = WebViewAssetLoader.Builder()
-            .setDomain("appassets.androidplatform.net")
-            .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
-            .build()
+        setupKeepAlive()
 
-        // CRITICAL: requests made by the Service Worker itself (fetching
-        // sw.js to register/update it, and any fetch() inside the SW's own
-        // fetch handler) do NOT go through WebViewClient.shouldInterceptRequest.
-        // They go through a separate pipe. Without wiring the same
-        // assetLoader in here too, sw.js registration fails with a generic
-        // "unknown error occurred when fetching the script" - which is
-        // exactly what was happening. This is what actually fixes it.
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
-        ) {
-            val swController = ServiceWorkerControllerCompat.getInstance()
-            swController.setServiceWorkerClient(object : ServiceWorkerClientCompat() {
-                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
-                    return if (request.url.host == "appassets.androidplatform.net") {
-                        assetLoader.shouldInterceptRequest(request.url)
-                    } else {
-                        null
-                    }
-                }
-            })
-        } else {
-            Toast.makeText(
-                this,
-                "این نسخه‌ی WebView از Service Worker پشتیبانی کامل نمی‌کنه؛ ممکنه بازی بالا نیاد",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-
-        // First run (or if a previous import never finished): start at
-        // loader.html so the auto-import script can run. Once the game is
-        // confirmed imported, jump straight to index.html forever after.
-        val alreadyImported = prefs.getBoolean(KEY_IMPORTED, false)
-        val startUrl = if (alreadyImported) {
-            "https://appassets.androidplatform.net/index.html"
-        } else {
-            "https://appassets.androidplatform.net/loader.html"
-        }
+        // کوکی‌ها (شامل third-party) برای لاگین و سشن
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(binding.webView, true)
 
         binding.webView.apply {
             settings.apply {
                 javaScriptEnabled = true
-                domStorageEnabled = true
-                databasePath = applicationContext.filesDir.path + "/databases/"
-                allowFileAccess = true
-                allowContentAccess = true
+                domStorageEnabled = true            // localStorage + IndexedDB
+                @Suppress("DEPRECATION")
+                databaseEnabled = true
+                cacheMode = WebSettings.LOAD_DEFAULT
                 mediaPlaybackRequiresUserGesture = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                javaScriptCanOpenWindowsAutomatically = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                setSupportZoom(false)
+                builtInZoomControls = false
+
+                // حالا که محتوا از اینترنت میاد، دسترسی به فایل لوکال لازم نیست
+                allowFileAccess = false
+                allowContentAccess = false
+
+                // شبیه مرورگر واقعی کروم (حذف نشانه‌های WebView)
+                userAgentString = userAgentString
+                    .replace("; wv", "")
+                    .replace(Regex("Version/\\d+\\.\\d+\\s"), "")
             }
 
             webChromeClient = object : WebChromeClient() {
@@ -182,47 +150,31 @@ class MainActivity : AppCompatActivity() {
             }
 
             webViewClient = object : WebViewClient() {
-                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                    return if (request.url.host == "appassets.androidplatform.net") {
-                        assetLoader.shouldInterceptRequest(request.url)
-                    } else {
-                        super.shouldInterceptRequest(view, request)
-                    }
-                }
-
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                    val url = request.url.toString()
+                    val host = request.url.host ?: ""
+                    if (host == SITE_HOST || host.endsWith(".$SITE_HOST")) return false
 
-                    return when {
-                        request.url.host == "appassets.androidplatform.net" -> false
-
-                        else -> {
-                            try {
-                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                            } catch (e: Exception) {
-                                Toast.makeText(this@MainActivity, "مرورگری یافت نشد", Toast.LENGTH_SHORT).show()
-                            }
-                            true
-                        }
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "مرورگری یافت نشد", Toast.LENGTH_SHORT).show()
                     }
+                    return true
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
                     view.requestFocus()
+                }
 
-                    // Only auto-import from loader.html, and only if we
-                    // haven't already imported successfully before.
-                    if (!prefs.getBoolean(KEY_IMPORTED, false) && url.contains("loader.html")) {
-                        view.evaluateJavascript(buildAutoImportScript(), null)
-                    }
+                // اگر سیستم پروسه‌ی رندر وب‌ویو رو برای آزادسازی رم کشت، اکتیویتی دوباره ساخته می‌شه
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    recreate()
+                    return true
                 }
             }
 
             setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
                 if (url.startsWith("blob:")) {
-                    // نکته مهم: mimetype و contentDisposition که خود WebView برای blob می‌ده
-                    // اغلب نادرست/خالی است (مثلا text/plain به‌جای image/png).
-                    // برای همین نوع واقعی رو مستقیم از خود blob.type می‌خونیم.
                     val js = """
                         var xhr = new XMLHttpRequest();
                         xhr.open('GET', '$url', true);
@@ -254,8 +206,6 @@ class MainActivity : AppCompatActivity() {
                             val base64 = base64Data.substring(base64Data.indexOf(",") + 1)
                             val bytes = Base64.decode(base64, Base64.DEFAULT)
 
-                            // به‌جای اعتماد کامل به mimeType (که برای بعضی فایل‌ها نادرست می‌رسه)،
-                            // نوع واقعی فایل رو از روی magic bytes خودش تشخیص می‌دیم.
                             val detectedType = detectMimeTypeFromMagicBytes(bytes)
                             val effectiveMimeType = detectedType ?: mimeType
 
@@ -278,241 +228,68 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-
-                // Called from the injected auto-import script once storeFiles()
-                // has actually completed (not just "started"), right before it
-                // clicks the Play button. Persists the flag so every future
-                // launch skips loader.html and goes straight to index.html.
-                @android.webkit.JavascriptInterface
-                fun markImported() {
-                    runOnUiThread {
-                        prefs.edit().putBoolean(KEY_IMPORTED, true).apply()
-                    }
-                }
-
-                // Optional: surface import failures as a Toast instead of
-                // failing silently if something in the page changed.
-                @android.webkit.JavascriptInterface
-                fun reportImportError(message: String) {
-                    runOnUiThread {
-                        Toast.makeText(this@MainActivity, "خطا در ایمپورت خودکار بازی: $message", Toast.LENGTH_LONG).show()
-                    }
-                }
             }, "Android")
 
-            loadUrl(startUrl)
+            if (savedInstanceState == null) {
+                loadUrl(START_URL)
+            } else {
+                restoreState(savedInstanceState)
+            }
         }
     }
 
-    /**
-     * Builds the JS that runs once loader.html finishes loading. It:
-     *  1. Fetches assets/gamefiles-manifest.json (list of relative paths under www/).
-     *  2. Fetches each file's bytes from assets/gamefiles/<path> (served via the
-     *     existing WebViewAssetLoader, so this is a normal same-origin fetch()).
-     *  3. Wraps them as File objects with a faked webkitRelativePath, exactly
-     *     what the folder-picker's own onFileInputChange() handler expects.
-     *  4. Assigns them to #file-input and dispatches a real "change" event,
-     *     which runs the loader's unmodified import pipeline (storeFiles()),
-     *     including its own required-files validation.
-     *  5. Waits for #btn-play to appear (import succeeded) and clicks it,
-     *     which is the same as the user pressing Play themselves.
-     *
-     * Every fetch (manifest + each per-file fetch) goes through
-     * fetchWithRetry(): a handful of retries with exponential backoff before
-     * giving up, plus a cache-busting query param on retries so a broken/
-     * empty response served once (e.g. transient WebViewAssetLoader hiccup)
-     * doesn't get reused. This is what previously made the game hang on
-     * "Loading" forever the moment a single fetch failed once - now a
-     * transient failure is retried instead of aborting the whole import.
-     *
-     * If the game's own www/ root already contains "www" as its first path
-     * segment inside the manifest, GAME_ROOT_LABEL is irrelevant; the loader's
-     * normalizeFolderPath() only strips the FIRST path segment then an
-     * optional leading "www/", so prefixing every path with "Game/www/" is
-     * always safe regardless of how gamefiles/ is laid out.
-     */
-    private fun buildAutoImportScript(): String {
-        return """
-        (function() {
-          if (window.__autoImportStarted) return;
-          window.__autoImportStarted = true;
+    // ───────────── زنده نگه داشتن برنامه در بکگراند ─────────────
 
-          function fail(msg) {
-            try { Android.reportImportError(String(msg)); } catch (e) {}
-          }
+    private fun setupKeepAlive() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
-          function ss(key) {
-            try { return sessionStorage.getItem(key); } catch (e) { return null; }
-          }
-          function ssSet(key, val) {
-            try { sessionStorage.setItem(key, val); } catch (e) {}
-          }
-          function ssRemove(key) {
-            try { sessionStorage.removeItem(key); } catch (e) {}
-          }
-
-          function sleep(ms) {
-            return new Promise(function(resolve) { setTimeout(resolve, ms); });
-          }
-
-          // Tries to reach the loader's own status line if it's already
-          // defined on the page by the time we run (it is, since this
-          // script only fires from onPageFinished). Best-effort only -
-          // never lets a UI failure break the import itself.
-          function reportProgress(msg) {
-            try {
-              var el = document.getElementById('status');
-              if (el) el.textContent = msg;
-            } catch (e) {}
-          }
-
-          // Fetches url with retries + exponential backoff (with jitter)
-          // before giving up. On every retry attempt (not the first try)
-          // a cache-busting query param is appended, so a bad/empty
-          // response that got served once isn't just replayed from some
-          // intermediate cache. Treats both network errors (fetch reject)
-          // and non-OK HTTP statuses as retryable failures.
-          async function fetchWithRetry(url, maxRetries, label) {
-            var attempt = 0;
-            var lastErr = null;
-            while (attempt <= maxRetries) {
-              try {
-                var target = url;
-                if (attempt > 0) {
-                  target += (url.indexOf('?') === -1 ? '?' : '&') + '_retry=' + attempt;
-                  reportProgress('در حال تلاش مجدد (' + attempt + '/' + maxRetries + ')... ' + (label || ''));
-                }
-                var resp = await fetch(target, { cache: 'no-store' });
-                if (resp.ok) return resp;
-                lastErr = new Error('HTTP ' + resp.status + ' for ' + url);
-              } catch (e) {
-                lastErr = e;
-              }
-              attempt++;
-              if (attempt <= maxRetries) {
-                var backoff = Math.min(4000, 400 * Math.pow(2, attempt - 1));
-                var jitter = Math.floor(Math.random() * 150);
-                await sleep(backoff + jitter);
-              }
-            }
-            throw lastErr || new Error('fetch failed for ' + url);
-          }
-
-          // Waits for the Play button to appear AND the Service Worker to
-          // actually be controlling this page before clicking it. If the
-          // button shows up before the SW has taken control (a real race:
-          // storeFiles() can finish and reveal #btn-play before the SW's
-          // controllerchange fires), clicking immediately leads straight to
-          // index.html trying to load js/*.js with no SW to serve them from
-          // IndexedDB -> "Failed to load script" boot crash.
-          //
-          // Fix: if we see the button but no controller yet, reload once
-          // (same recovery pattern the loader itself uses elsewhere) and
-          // keep waiting after the reload lands. Guarded by sessionStorage
-          // so we never reload more than once per import attempt.
-          function waitAndClickPlay() {
-            var reloadedForControl = ss('twal_reload_for_control') === '1';
-            var tries = 0;
-            var maxTries = 1200; // ~10 minutes at 500ms, generous for big installs
-            var poll = setInterval(function() {
-              tries++;
-              var playBtn = document.getElementById('btn-play');
-              var visible = playBtn && playBtn.offsetParent !== null;
-              var controlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
-
-              if (visible && controlled) {
-                clearInterval(poll);
-                ssRemove('twal_reload_for_control');
-                ssRemove('twal_import_started');
-                try { Android.markImported(); } catch (e) {}
-                playBtn.click();
-              } else if (visible && !controlled && !reloadedForControl) {
-                clearInterval(poll);
-                ssSet('twal_reload_for_control', '1');
-                location.reload();
-              } else if (tries >= maxTries) {
-                clearInterval(poll);
-                fail('timed out waiting for import / service worker control');
-              }
-            }, 500);
-          }
-
-          async function run() {
-            try {
-              // If we already dispatched the import on a previous load of
-              // this same page (before a self-reload for SW control),
-              // don't redo the fetch/File/dispatch dance - just resume
-              // waiting for Play + control.
-              if (ss('twal_import_started') === '1') {
-                waitAndClickPlay();
-                return;
-              }
-              ssSet('twal_import_started', '1');
-
-              var manifestResp = await fetchWithRetry('gamefiles-manifest.json', 4, 'manifest');
-              var paths = await manifestResp.json();
-              if (!Array.isArray(paths) || paths.length === 0) throw new Error('empty manifest');
-
-              var dt = new DataTransfer();
-              var failedPaths = [];
-              for (var i = 0; i < paths.length; i++) {
-                var relPath = paths[i];
-                reportProgress('در حال دریافت فایل ' + (i + 1) + ' از ' + paths.length + '...');
-                try {
-                  // Up to 5 retries per file: game installs can have
-                  // thousands of small requests, and a handful of
-                  // transient failures among them is normal - it's the
-                  // give-up-on-first-miss behavior that caused the stuck
-                  // "Loading" screen, not the failures themselves.
-                  var resp = await fetchWithRetry('gamefiles/' + relPath, 5, relPath);
-                  var blob = await resp.blob();
-                  var name = relPath.split('/').pop();
-                  var file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
-                  Object.defineProperty(file, 'webkitRelativePath', {
-                    value: '$GAME_ROOT_LABEL/www/' + relPath,
-                    configurable: true
-                  });
-                  dt.items.add(file);
-                } catch (fileErr) {
-                  failedPaths.push(relPath + ': ' + (fileErr && fileErr.message ? fileErr.message : String(fileErr)));
-                }
-              }
-
-              // Fail loudly and specifically instead of silently handing
-              // an incomplete file list to the loader's own storeFiles(),
-              // which would otherwise just report generic "missing files".
-              if (failedPaths.length > 0) {
-                throw new Error(
-                  'failed to fetch ' + failedPaths.length + ' of ' + paths.length + ' file(s) after retries:\n' +
-                  failedPaths.slice(0, 10).join('\n') +
-                  (failedPaths.length > 10 ? '\n...and ' + (failedPaths.length - 10) + ' more' : '')
-                );
-              }
-
-              var input = document.getElementById('file-input');
-              if (!input) throw new Error('#file-input not found on page');
-              input.files = dt.files;
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-
-              waitAndClickPlay();
-            } catch (err) {
-              // Let a fresh page load retry the whole import from scratch
-              // rather than getting stuck permanently flagged as "started".
-              ssRemove('twal_import_started');
-              fail(err && err.message ? err.message : String(err));
-            }
-          }
-
-          run();
-        })();
-        """.trimIndent()
+        ContextCompat.startForegroundService(this, Intent(this, KeepAliveService::class.java))
+        requestIgnoreBatteryOptimizations()
     }
 
-    /**
-     * اسم فایل رو یا از هدر Content-Disposition استخراج می‌کنه،
-     * یا در نبود اون، بر اساس mimeType واقعی یک اسم و پسوند درست می‌سازه
-     * (به‌جای پیش‌فرض هاردکد شده‌ی .zip که باعث خرابی پسوند می‌شد).
-     */
+    @SuppressLint("BatteryLife")
+    private fun requestIgnoreBatteryOptimizations() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                )
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // جلوگیری از متوقف شدن تایمرها و JS وقتی اپ به بکگراند میره
+        binding.webView.onResume()
+        binding.webView.resumeTimers()
+        CookieManager.getInstance().flush()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        binding.webView.saveState(outState)
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) {
+            stopService(Intent(this, KeepAliveService::class.java))
+        }
+        binding.webView.destroy()
+        super.onDestroy()
+    }
+
+    // ───────────── مدیریت فایل و دانلود ─────────────
+
     private fun guessFileNameFromDisposition(contentDisposition: String, mimeType: String): String {
         val regex = Regex("filename\\*?=(?:UTF-8'')?\"?([^\";]+)\"?")
         val match = regex.find(contentDisposition)
@@ -529,33 +306,19 @@ class MainActivity : AppCompatActivity() {
         return if (guessed != null) ".$guessed" else ""
     }
 
-    /**
-     * تشخیص نوع واقعی فایل از روی چند بایت اول (magic bytes/file signature).
-     * چون mimeType و blob.type که از WebView/JS می‌رسن قابل‌اعتماد نیستن،
-     * این روش قطعی‌ترین راه برای تشخیص PNG (اسکرین‌شات) در برابر ZIP (فایل سیو) است.
-     * برای انواع دیگه (که تشخیص داده نشن) null برمی‌گردونه و رفتار قبلی حفظ می‌شه.
-     */
     private fun detectMimeTypeFromMagicBytes(bytes: ByteArray): String? {
         if (bytes.size < 8) return null
 
-        // PNG: 89 50 4E 47 0D 0A 1A 0A
         val pngSignature = byteArrayOf(
             0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
         )
-        if (bytes.copyOfRange(0, 8).contentEquals(pngSignature)) {
-            return "image/png"
-        }
+        if (bytes.copyOfRange(0, 8).contentEquals(pngSignature)) return "image/png"
 
-        // JPEG: FF D8 FF
-        if (bytes.size >= 3 &&
-            bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()
-        ) {
+        if (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) {
             return "image/jpeg"
         }
 
-        // ZIP (و فرمت‌های مبتنی بر ZIP): 50 4B 03 04 یا 50 4B 05 06 (خالی) یا 50 4B 07 08
-        if (bytes.size >= 4 &&
-            bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() &&
+        if (bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() &&
             (bytes[2] == 0x03.toByte() || bytes[2] == 0x05.toByte() || bytes[2] == 0x07.toByte())
         ) {
             return "application/zip"
@@ -564,27 +327,14 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    /**
-     * پسوند فایل رو با توجه به نوع تشخیص‌داده‌شده از magic bytes اصلاح می‌کنه.
-     * مثلا save_123.zip.txt -> save_123.png وقتی محتوا واقعا PNG باشه.
-     */
     private fun fixExtensionForDetectedType(fileName: String, detectedType: String): String {
         val correctExtension = extensionFromMimeType(detectedType)
         if (correctExtension.isEmpty()) return fileName
-
-        // اگر اسم فایل از قبل با پسوند درست تموم می‌شه، دست‌نخورده برش می‌گردونیم
         if (fileName.endsWith(correctExtension, ignoreCase = true)) return fileName
-
-        // نام پایه رو با حذف تمام پسوندهای شناخته‌شده‌ی اشتباه می‌سازیم
         val baseName = fileName.substringBeforeLast('.', fileName)
         return "$baseName$correctExtension"
     }
 
-    /**
-     * تابع مرکزی و یکسان برای ذخیره‌ی هر نوع فایل در پوشه‌ی Downloads.
-     * روی Android 10+ (API 29+) از MediaStore استفاده می‌کنه (سازگار با Scoped Storage).
-     * روی نسخه‌های قدیمی‌تر مستقیم توی File می‌نویسه.
-     */
     private fun saveToDownloads(fileName: String, mimeType: String?, input: InputStream) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val resolver = contentResolver
@@ -622,12 +372,6 @@ class MainActivity : AppCompatActivity() {
         mimetype: String?
     ) {
         val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
-        val uri = Uri.parse(url)
-
-        if (uri.host == "appassets.androidplatform.net") {
-            copyFromAssets(uri, fileName, mimetype)
-            return
-        }
 
         runOnUiThread {
             Toast.makeText(this, "در حال دانلود: $fileName", Toast.LENGTH_SHORT).show()
@@ -655,7 +399,7 @@ class MainActivity : AppCompatActivity() {
                     val code = connection.responseCode
                     if (code in 300..399) {
                         val location = connection.getHeaderField("Location") ?: break
-                        currentUrl = location
+                        currentUrl = URL(URL(currentUrl), location).toString()
                         connection.disconnect()
                         redirects++
                         continue
@@ -685,34 +429,11 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun copyFromAssets(uri: Uri, fileName: String, mimetype: String?) {
-        runOnUiThread {
-            Toast.makeText(this, "در حال آماده‌سازی: $fileName", Toast.LENGTH_SHORT).show()
-        }
-
-        Thread {
-            try {
-                val assetPath = uri.path?.trimStart('/') ?: throw Exception("مسیر فایل نامعتبر است")
-
-                assets.open(assetPath).use { input ->
-                    saveToDownloads(fileName, mimetype, input)
-                }
-
-                runOnUiThread {
-                    Toast.makeText(this, "فایل در Downloads ذخیره شد: $fileName", Toast.LENGTH_LONG).show()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    Toast.makeText(this, "خطا در ذخیره‌سازی: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-            }
-        }.start()
-    }
-
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
         return super.onKeyDown(keyCode, event)
     }
 
+    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {}
 }
