@@ -15,6 +15,8 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Base64
 import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
@@ -46,6 +48,18 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val START_URL = "https://ynoproject.net/"
         private const val SITE_HOST = "ynoproject.net"
+        private const val SPOOF_USER_AGENT = false
+    }
+
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+
+    private fun exitCustomView() {
+        val v = customView ?: return
+        (window.decorView as ViewGroup).removeView(v)
+        customViewCallback?.onCustomViewHidden()
+        customView = null
+        customViewCallback = null
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -110,22 +124,47 @@ class MainActivity : AppCompatActivity() {
                 mediaPlaybackRequiresUserGesture = false
                 mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                 javaScriptCanOpenWindowsAutomatically = true
-                useWideViewPort = true
-                loadWithOverviewMode = true
+                // این دو مورد باعث می‌شدن صفحه با عرض ۹۸۰px چیده و کوچک بشه
+                useWideViewPort = false
+                loadWithOverviewMode = false
                 setSupportZoom(false)
                 builtInZoomControls = false
 
-                // حالا که محتوا از اینترنت میاد، دسترسی به فایل لوکال لازم نیست
                 allowFileAccess = false
                 allowContentAccess = false
 
-                // شبیه مرورگر واقعی کروم (حذف نشانه‌های WebView)
-                userAgentString = userAgentString
-                    .replace("; wv", "")
-                    .replace(Regex("Version/\\d+\\.\\d+\\s"), "")
+                // اگه با true شدن این گزینه سایت درست کار کرد و لگ نداشت، نگهش دار
+                if (SPOOF_USER_AGENT) {
+                    userAgentString = userAgentString
+                        .replace("; wv", "")
+                        .replace(Regex("Version/\\d+\\.\\d+\\s"), "")
+                }
             }
 
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+
             webChromeClient = object : WebChromeClient() {
+                // پشتیبانی از دکمه‌ی Full Screen سایت (Fullscreen API)
+                override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                    if (customView != null) {
+                        callback.onCustomViewHidden()
+                        return
+                    }
+                    customView = view
+                    customViewCallback = callback
+                    (window.decorView as ViewGroup).addView(
+                        view,
+                        ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                }
+
+                override fun onHideCustomView() {
+                    exitCustomView()
+                }
+
                 override fun onShowFileChooser(
                     webView: WebView?,
                     filePathCallback: ValueCallback<Array<Uri>>?,
@@ -430,7 +469,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK) return true
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            exitCustomView()
+            return true
+        }
         return super.onKeyDown(keyCode, event)
     }
 
